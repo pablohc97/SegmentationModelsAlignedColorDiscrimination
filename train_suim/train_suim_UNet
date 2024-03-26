@@ -1,0 +1,162 @@
+# %%
+import tensorflow as tf
+import matplotlib.pyplot as plt
+import numpy as np
+import random
+
+from our_unet import *
+
+import os
+#os.environ["CUDA_VISIBLE_DEVICES"]="-1"
+
+# %%
+test_images_folder_path = "/lustre/ific.uv.es/ml/uv075/Databases/Segmentation/suim/test/images" 
+test_mask_folder_path = "/lustre/ific.uv.es/ml/uv075/Databases/Segmentation/suim/test/masks" 
+
+test_images_names = sorted([img for img in os.listdir(test_images_folder_path) if img.endswith('.jpg')])
+test_mask_names = sorted([img for img in os.listdir(test_mask_folder_path) if img.endswith('.bmp')])
+
+train_images_folder_path = "/lustre/ific.uv.es/ml/uv075/Databases/Segmentation/suim/train/images" 
+train_mask_folder_path = "/lustre/ific.uv.es/ml/uv075/Databases/Segmentation/suim/train/masks" 
+
+train_images_names_original = sorted([img for img in os.listdir(train_images_folder_path) if img.endswith('.jpg')])
+train_mask_names_original = sorted([img for img in os.listdir(train_mask_folder_path) if img.endswith('.bmp')])
+
+values = random.sample(range(len(train_images_names_original)), 200)
+train_values = random.sample(list(set(range(len(train_images_names_original))) - set(values)), len(train_images_names_original) - 200)
+
+train_images_names, train_mask_names, val_images_names, val_mask_names = [], [], [], []
+train_images_names = [train_images_names_original[j] for j in train_values]
+train_mask_names = [train_mask_names_original[j] for j in train_values]
+val_images_names = [train_images_names_original[j] for j in values]
+val_mask_names = [train_mask_names_original[j] for j in values]
+
+print(f'Train images: {len(train_images_names)}')
+print(f'Train labels: {len(train_mask_names)}')
+print(f'Val images: {len(val_images_names)}')
+print(f'Val labels: {len(val_mask_names)}')
+print(f'Test images: {len(test_images_names)}')
+print(f'Test labels: {len(test_mask_names)}')
+
+
+image_colors = [(0, 0, 0),  # Back
+                (0, 0, 255),   # Human
+                (0, 255, 0),   # Plants
+                (0, 255, 255),  # Wreck 
+                (255, 0, 0),  # Robot
+                (255, 0, 255),  # Reef
+                (255, 255, 0),  # Fish
+                (255, 255, 255)]  # Sand
+
+color_reference = tf.cast(tf.constant(image_colors), dtype=tf.int32)
+print(color_reference)
+
+def class_to_color(mask):
+    color_mask = np.zeros((mask.shape[0], mask.shape[1], 3)).astype('float')
+    for c in range(len(image_colors)):
+        color_true = mask == c
+        for i in range(3):
+            color_mask[:,:,i] += color_true*image_colors[c][i]
+    color_mask = tf.cast(color_mask, dtype = tf.int32)
+    return color_mask
+
+# %%
+def load_image(folder, file):
+    image = tf.io.read_file(folder + '/' + file)
+    image = tf.cast(tf.image.decode_jpeg(image, channels = 3), tf.float32)
+    image = tf.image.resize(image, (240, 320))
+    image = tf.cast(image, tf.float32)/255.0
+    return image
+
+@tf.function
+def load_mask(folder, file):
+    mask = tf.io.read_file(folder + '/' + file)
+    mask = tf.cast(tf.image.decode_bmp(mask, channels = 3), tf.int32)
+    mask = tf.image.resize(mask, (240, 320), method = tf.image.ResizeMethod.NEAREST_NEIGHBOR)
+    comp = tf.equal(mask[...,None,:], color_reference)
+    one_hot = tf.argmax(tf.cast(tf.reduce_all(comp, axis=-1), dtype=tf.float32), axis=-1)[...,None]
+    return one_hot
+
+def load_train(image_name, mask_name):
+    image = load_image(train_images_folder_path, image_name)
+    mask = load_mask(train_mask_folder_path, mask_name)
+    return image, mask
+
+def load_test(image_name, mask_name):
+    image = load_image(test_images_folder_path, image_name)
+    mask = load_mask(test_mask_folder_path, mask_name)
+    return image, mask
+
+# %%
+batch_size=32
+
+train_dataset = tf.data.Dataset.from_tensor_slices((train_images_names, train_mask_names))
+train_dataset = train_dataset.map(load_train, num_parallel_calls = tf.data.experimental.AUTOTUNE)
+train_dataset = train_dataset.batch(batch_size)
+print(train_dataset)
+
+val_dataset = tf.data.Dataset.from_tensor_slices((val_images_names, val_mask_names))
+val_dataset = val_dataset.map(load_train, num_parallel_calls = tf.data.experimental.AUTOTUNE)
+val_dataset = val_dataset.batch(batch_size)
+print(val_dataset)
+
+test_dataset = tf.data.Dataset.from_tensor_slices((test_images_names, test_mask_names))
+test_dataset = test_dataset.map(load_test, num_parallel_calls = tf.data.experimental.AUTOTUNE)
+test_dataset = test_dataset.batch(batch_size)
+print(test_dataset)
+
+# %%
+#f, ax = plt.subplots(2, 5, figsize = (16,5))
+#for images, masks in train_dataset.take(1):
+#    for idx, (image, mask) in enumerate(zip(images[:5], masks[:5])):
+#        ax[0,idx].imshow(image)
+#        ax[0,idx].axis('off')
+#        ax[1,idx].imshow(class_to_color(np.array(mask[:,:,0])))
+#        ax[1,idx].axis('off')
+
+# %%
+model1 = build_unet_nogdn((240, 320, 3), len(image_colors))
+model1.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3), loss=tf.keras.losses.SparseCategoricalCrossentropy(), metrics=['accuracy'])
+model1.load_weights('prueba_result_good_70.hdf5')
+print(model1.summary())
+
+# %%
+#f, ax = plt.subplots(3, 5, figsize = (16,5))
+#for images, masks in train_dataset.take(1):
+#    pred_mask = model1.predict(images)
+#    for idx, (image, mask) in enumerate(zip(images[:5], masks[:5])):
+#        ax[0,idx].imshow(image)
+#        ax[0,idx].axis('off')
+#        ax[1,idx].imshow(class_to_color(np.array(mask)[:,:,0]))
+#        ax[1,idx].axis('off')
+#        ax[2,idx].imshow(class_to_color(np.array(np.argmax(pred_mask[idx],axis=-1))))
+#        ax[2,idx].axis('off')
+
+model_checkpoint = tf.keras.callbacks.ModelCheckpoint('prueba.hdf5', 
+                                                      monitor = 'val_loss', 
+                                                      verbose = 1, 
+                                                      mode= 'auto',
+                                                      save_weights_only = True,
+                                                      save_best_only = True)
+
+# %%
+model1.fit(train_dataset, 
+           epochs=200,
+           callbacks=[model_checkpoint],
+           validation_data=val_dataset)
+
+model1.save_weights('prueba_last.hdf5')
+
+# %%
+#f, ax = plt.subplots(3, 5, figsize = (16,5))
+#for images, masks in train_dataset.take(1):
+#    pred_mask = model1.predict(images)
+#    for idx, (image, mask) in enumerate(zip(images[:5], masks[:5])):
+#        ax[0,idx].imshow(image)
+#        ax[0,idx].axis('off')
+#        ax[1,idx].imshow(class_to_color(np.array(mask)[:,:,0]))
+#        ax[1,idx].axis('off')
+#        ax[2,idx].imshow(class_to_color(np.array(np.argmax(pred_mask[idx],axis=-1))))
+#        ax[2,idx].axis('off')
+#
+
