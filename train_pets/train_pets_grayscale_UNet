@@ -1,0 +1,78 @@
+# %%
+import tensorflow as tf
+import matplotlib.pyplot as plt
+import numpy as np
+
+from our_unet import *
+
+import os
+#os.environ["CUDA_VISIBLE_DEVICES"]="-1"
+
+# %%
+import tensorflow_datasets as tfds
+dataset, info = tfds.load('oxford_iiit_pet:3.*.*', with_info=True)
+
+# %%
+def read_and_preprocess(data):
+    #input_img = tf.image.resize(tf.image.rgb_to_grayscale(data['image']), (128,128)) #resizing the image shape
+    input_img = tf.repeat(tf.image.resize(tf.image.rgb_to_grayscale(data['image']), (128,128)), repeats=3, axis=-1)
+    input_mask = tf.image.resize(data['segmentation_mask'], (128, 128), method='nearest')  #resizing the mask shape
+    #input_mask = tf.one_hot(input_mask[:,:,0], depth=3, on_value=1.0, off_value=0.0, axis=-1)
+    
+    input_img = tf.image.convert_image_dtype(input_img, tf.float32) #converting image to 0,1 form
+    input_mask -= 1 #from {1,2,3} to {0,1,2}
+    return input_img , input_mask
+
+# %%
+train = dataset['train'].map(read_and_preprocess, num_parallel_calls = tf.data.AUTOTUNE)
+test = dataset['test'].map(read_and_preprocess)
+
+print(train)
+print(test)
+
+# %%
+f, ax = plt.subplots(2, 5, figsize = (16,5))
+for idx,(img, mask) in enumerate(train.take(5)):
+    ax[0, idx].imshow(img, cmap='gray')
+    ax[0, idx].axis('off')
+    #ax[1, idx].imshow(np.argmax(mask,axis=-1), cmap='gray')
+    ax[1, idx].imshow(mask, cmap='gray')
+    ax[1, idx].axis('off')
+
+# %%
+model_checkpoint = tf.keras.callbacks.ModelCheckpoint('prueba_input_3.hdf5', 
+                                                      monitor = 'val_loss', 
+                                                      verbose = 1, 
+                                                      mode= 'auto',
+                                                      save_weights_only = True,
+                                                      save_best_only = True)
+# %%
+model = build_unet_nogdn((128,128,3), 3)
+model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(), metrics=['accuracy'])
+print(model.summary())
+
+# %%
+#f, ax = plt.subplots(2, 5, figsize = (16,5))
+#for idx, (image, mask) in enumerate(test.take(5)):
+#    pred_mask = model.predict(image[None], verbose=None)
+#    ax[0, idx].imshow(image, cmap='gray')
+#    ax[0, idx].axis('off')
+#    ax[1, idx].imshow(np.argmax(pred_mask[0],axis=-1), cmap='gray')
+#    ax[1, idx].axis('off')
+
+# %%
+model.fit(train.batch(64), 
+          epochs=200,
+          callbacks = [model_checkpoint],
+          validation_data = test.batch(64))
+
+# %%
+#f, ax = plt.subplots(2, 5, figsize = (16,5))
+#for idx, (image, mask) in enumerate(test.take(5)):
+#    pred_mask = model.predict(image[None], verbose=None)
+#    ax[0, idx].imshow(image, cmap='gray')
+#    ax[0, idx].axis('off')
+#    ax[1, idx].imshow(np.argmax(pred_mask[0],axis=-1), cmap='gray')
+#    ax[1, idx].axis('off')
+
+
